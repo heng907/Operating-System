@@ -1,0 +1,346 @@
+From 93ebd278ea3fb72679236fd9cbf35cf47d40bc4f Mon Sep 17 00:00:00 2001
+From: heng907 <yanheng907@gmail.com>
+Date: Fri, 17 Oct 2025 19:25:10 +0000
+Subject: [PATCH] Add sys_revstr and sys_tempbuf system calls
+
+Implement two new system calls:
+- sys_revstr: reverses a string from user space.
+- sys_tempbuf: manages a kernel temporary string list with ADD/REMOVE/PRINT.
+
+Also:
+- Updated unistd.h, syscalls.h, sys_ni.c, Makefile, for integration.
+
+Signed-off-by: heng907 <yanheng907@gmail.com>
+---
+ Makefile                          |   2 +-
+ include/linux/syscalls.h          |   4 +
+ include/uapi/asm-generic/unistd.h |   8 +-
+ kernel/Makefile                   |   5 +
+ kernel/revstr_syscall.c           |  41 +++++++
+ kernel/sys_ni.c                   |   5 +
+ kernel/tempbuf_syscall.c          | 184 ++++++++++++++++++++++++++++++
+ 7 files changed, 247 insertions(+), 2 deletions(-)
+ create mode 100644 kernel/revstr_syscall.c
+ create mode 100644 kernel/tempbuf_syscall.c
+
+diff --git a/Makefile b/Makefile
+index 997b67722..487407dae 100644
+--- a/Makefile
++++ b/Makefile
+@@ -2,7 +2,7 @@
+ VERSION = 6
+ PATCHLEVEL = 1
+ SUBLEVEL = 0
+-EXTRAVERSION =
++EXTRAVERSION = -os-111550129
+ NAME = Hurr durr I'ma ninja sloth
+ 
+ # *DOCUMENTATION*
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index a34b0f9a9..0c33337c5 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -789,6 +789,10 @@ asmlinkage long sys_getegid(void);
+ asmlinkage long sys_gettid(void);
+ asmlinkage long sys_sysinfo(struct sysinfo __user *info);
+ 
++/* New System Call */
++asmlinkage long sys_revstr(char __user *str, size_t len);
++asmlinkage long sys_tempbuf(int mode, void __user *data, size_t size);
++
+ /* ipc/mqueue.c */
+ asmlinkage long sys_mq_open(const char __user *name, int oflag, umode_t mode, struct mq_attr __user *attr);
+ asmlinkage long sys_mq_unlink(const char __user *name);
+diff --git a/include/uapi/asm-generic/unistd.h b/include/uapi/asm-generic/unistd.h
+index 45fa180cc..2e117bd3d 100644
+--- a/include/uapi/asm-generic/unistd.h
++++ b/include/uapi/asm-generic/unistd.h
+@@ -886,8 +886,14 @@ __SYSCALL(__NR_futex_waitv, sys_futex_waitv)
+ #define __NR_set_mempolicy_home_node 450
+ __SYSCALL(__NR_set_mempolicy_home_node, sys_set_mempolicy_home_node)
+ 
++#define __NR_revstr   451
++__SYSCALL(__NR_revstr, sys_revstr)
++
++#define __NR_tempbuf   452
++__SYSCALL(__NR_tempbuf, sys_tempbuf)
++
+ #undef __NR_syscalls
+-#define __NR_syscalls 451
++#define __NR_syscalls 453
+ 
+ /*
+  * 32 bit systems traditionally used different
+diff --git a/kernel/Makefile b/kernel/Makefile
+index d754e0be1..7c455a9c2 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -53,6 +53,11 @@ obj-y += rcu/
+ obj-y += livepatch/
+ obj-y += dma/
+ obj-y += entry/
++
++# Adding New System call
++obj-y += revstr_syscall.o
++obj-y += tempbuf_syscall.o
++
+ obj-$(CONFIG_MODULES) += module/
+ 
+ obj-$(CONFIG_KCMP) += kcmp.o
+diff --git a/kernel/revstr_syscall.c b/kernel/revstr_syscall.c
+new file mode 100644
+index 000000000..840218173
+--- /dev/null
++++ b/kernel/revstr_syscall.c
+@@ -0,0 +1,41 @@
++#include <linux/kernel.h>
++#include <linux/syscalls.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++
++SYSCALL_DEFINE2(revstr, char __user *, str, size_t, len)
++{
++    char *k_buf;
++    k_buf = kmalloc(len + 1, GFP_KERNEL);
++    int n = (int)len;
++
++    // copy len bytes from user space
++    if (copy_from_user(k_buf, str, len)) {
++        kfree(k_buf);
++        return -EFAULT;
++    }
++    k_buf[len] = '\0';
++    pr_info("The origin string: %.*s\n", n, k_buf);
++
++    // reverse
++    char *temp = kmalloc(len + 1, GFP_KERNEL);
++    for(int i = 0; i < len; i++)
++    {
++        temp[len - 1 - i] = k_buf[i];
++    }
++    temp[len] = '\0';
++    pr_info("The reversed string: %.*s\n", n, temp);
++    
++    // return to user space
++    if (copy_to_user(str, temp, len)) {
++        kfree(k_buf);
++        kfree(temp);
++        return -EFAULT;
++    }
++
++
++    kfree(k_buf);
++    kfree(temp);
++    return 0;
++
++}
+\ No newline at end of file
+diff --git a/kernel/sys_ni.c b/kernel/sys_ni.c
+index 860b2dcf3..4fec81ca3 100644
+--- a/kernel/sys_ni.c
++++ b/kernel/sys_ni.c
+@@ -187,6 +187,11 @@ COND_SYSCALL(setfsgid);
+ COND_SYSCALL(setgroups);
+ COND_SYSCALL(getgroups);
+ 
++/* New System call*/
++COND_SYSCALL(revstr);
++COND_SYSCALL(tempbuf);
++
++
+ /* kernel/time.c */
+ 
+ /* kernel/timer.c */
+diff --git a/kernel/tempbuf_syscall.c b/kernel/tempbuf_syscall.c
+new file mode 100644
+index 000000000..d1f7f31a4
+--- /dev/null
++++ b/kernel/tempbuf_syscall.c
+@@ -0,0 +1,184 @@
++#include <linux/kernel.h>
++#include <linux/syscalls.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/list.h>
++#include <linux/mutex.h>
++
++enum mode {
++    PRINT,  // 0, Print all stored records to the kernel ring buffer
++    ADD,    // 1, Add a new record
++    REMOVE  // 2, Remove the first matching record
++};
++
++// node
++struct Node{
++    struct list_head node;
++    size_t len;
++    char str[];
++};
++
++// initial a list & mutex
++static LIST_HEAD(list);
++static DEFINE_MUTEX(lock);
++
++//ADD
++static int Add(const void __user *data, size_t size)
++{
++    struct Node *rec;
++
++    if(data == NULL || size == 0)
++    {
++        return -EFAULT;
++    }
++
++    rec = kmalloc(sizeof(*rec) + size + 1, GFP_KERNEL);
++
++    // copy from user space
++    if(copy_from_user(rec->str, data, size))
++    {
++        kfree(rec);
++        return -EFAULT;
++    }
++    rec->str[size] = '\0';
++    rec->len = size;
++
++    mutex_lock(&lock);
++    // Add new record
++    list_add_tail(&rec->node, &list);
++    mutex_unlock(&lock);
++
++    printk(KERN_INFO "[tempbuf] Added: %s\n", rec->str);
++    return 0;
++}
++
++// Remove
++static int Remove(const void __user *data, size_t size)
++{
++    struct Node *rec, *temp;
++    char *k_buf;
++
++    if(data == NULL || size == 0)
++    {
++        return -EFAULT;
++    }
++
++    k_buf = kmalloc(size, GFP_KERNEL);
++
++    if(copy_from_user(k_buf, data, size))
++    {
++        kfree(k_buf);
++        return -EFAULT;
++    }
++
++    mutex_lock(&lock);
++    // traverse whole list
++    list_for_each_entry_safe(rec, temp, &list, node)
++    {
++        // find the first same
++        if(rec->len == size && !memcmp(rec->str, k_buf, size))
++        {
++            // remove
++            list_del(&rec->node);
++            mutex_unlock(&lock);
++
++            printk(KERN_INFO "[tempbuf] Removed: %s\n", rec->str);
++            kfree(rec);
++            kfree(k_buf);
++            return 0;
++        }
++    }
++    mutex_unlock(&lock);
++    kfree(k_buf);
++    return -ENOENT;
++}
++
++// Print
++static long Print(void __user *data, size_t size)
++{
++    struct Node *rec;
++    char *k_buf, *p;
++    size_t cap = size;
++    size_t buf_cap = (cap < 512) ? cap : 512;
++    size_t used = 0;
++    bool first = true;
++
++    if(data == NULL || size == 0)
++    {
++        return -EFAULT;
++    }
++    k_buf = kmalloc(buf_cap + 1, GFP_KERNEL);
++
++    p = k_buf;
++
++    mutex_lock(&lock);
++    list_for_each_entry(rec, &list, node)
++    {
++        size_t need;
++        size_t remain;
++        need = rec->len + (first ? 0 : 1);
++        remain = (buf_cap > used) ? (buf_cap -used) : 0;
++        if(remain == 0)
++        {
++            break;
++        }
++
++        if(!first)
++        {
++            if(remain >= 1)
++            {
++                *p++ = ' ';
++                used += 1;
++                remain -= 1;
++            }
++            else
++            {
++                break;
++            }
++        }
++
++        if(remain > 0)
++        {
++            size_t copy = (rec->len <= remain) ? rec->len : remain;
++            memcpy(p, rec->str, copy);
++            p += copy;
++            used += copy;
++        }
++        first = false;
++    }
++    mutex_unlock(&lock);
++
++    *p = '\0';
++    printk(KERN_INFO "[tempbuf] %s\n", k_buf);
++
++    if(copy_to_user(data, k_buf, used))
++    {
++        kfree(k_buf);
++        return -EFAULT;
++    }
++    if (used < size) {
++        char nul = '\0';
++        if (copy_to_user((char __user *)data + used, &nul, 1))
++            pr_warn("[tempbuf] Failed to copy null terminator to user\n");
++    }
++
++
++    kfree(k_buf);
++    return used;
++
++}
++
++
++SYSCALL_DEFINE3(tempbuf, int, mode, void __user *, data, size_t, size)
++{
++    switch (mode) {
++    case ADD:
++        return Add(data, size);
++    case REMOVE:
++        return Remove(data, size);
++    case PRINT:
++        return Print(data, size);
++    default:
++        return -EINVAL;
++    }
++}
+-- 
+2.43.0
+
